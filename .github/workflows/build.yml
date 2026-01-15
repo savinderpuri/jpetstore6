@@ -1,0 +1,101 @@
+name: Build mybatis-parent
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+env:
+  AWS_REGION: us-east-1
+  ARTIFACT_ID: mybatis-parent
+  VERSION: 36
+  NEXUS_URL: "https://nexus.example.com"
+jobs:
+  "provision-runner":
+    name: Provision EC2 Runner
+    "runs-on": ubuntu-latest
+    outputs:
+      "runner-label": "${{ steps.create-runner.outputs.label }}"
+      "instance-id": "${{ steps.terraform.outputs.instance_id }}"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          "aws-access-key-id": "${{ secrets.AWS_ACCESS_KEY_ID }}"
+          "aws-secret-access-key": "${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          "aws-region": "${{ env.AWS_REGION }}"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Terraform Init & Apply
+        id: terraform
+        "working-directory": .github/terraform
+        run: |
+          terraform init
+          terraform apply -auto-approve -var="github_token=${{ secrets.GH_RUNNER_TOKEN }}" -var="repo=${{ github.repository }}"
+          echo "instance_id=$(terraform output -raw instance_id)" >> $GITHUB_OUTPUT
+      - name: Wait for Runner
+        id: create-runner
+        run: |
+          echo "label=self-hosted-${{ github.run_id }}" >> $GITHUB_OUTPUT
+          sleep 60
+  build:
+    name: Maven Build
+    needs: provision-runner
+    "runs-on": "${{ needs.provision-runner.outputs.runner-label }}"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          "java-version": 17
+          distribution: temurin
+          cache: maven
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
+      - name: Run Tests
+        run: mvn test
+      - name: Upload to Nexus
+        run: |
+          mvn deploy:deploy-file \
+            -DgroupId=${{ env.GROUP_ID }} \
+            -DartifactId=${{ env.ARTIFACT_ID }} \
+            -Dversion=${{ env.VERSION }}-${{ github.run_number }} \
+            -Dpackaging=war \
+            -Dfile=target/*.war \
+            -DrepositoryId=nexus \
+            -Durl=${{ env.NEXUS_URL }}/repository/maven-releases/
+        env:
+          GROUP_ID: org.mybatis
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mybatis-parent-war
+          path: target/*.war
+          "retention-days": 5
+  cleanup:
+    name: Cleanup EC2 Runner
+    needs:
+      - provision-runner
+      - build
+    "runs-on": ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          "aws-access-key-id": "${{ secrets.AWS_ACCESS_KEY_ID }}"
+          "aws-secret-access-key": "${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          "aws-region": "${{ env.AWS_REGION }}"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Terraform Destroy
+        "working-directory": .github/terraform
+        run: |
+          terraform init
+          terraform destroy -auto-approve -var="github_token=${{ secrets.GH_RUNNER_TOKEN }}" -var="repo=${{ github.repository }}"
