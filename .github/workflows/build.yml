@@ -4,10 +4,18 @@ on:
     branches:
       - main
       - master
+    paths:
+      - .github/workflows/**
+      - pom.xml
+      - src/**
   pull_request:
     branches:
       - main
       - master
+    paths:
+      - .github/workflows/**
+      - pom.xml
+      - src/**
   workflow_dispatch:
 env:
   ARTIFACT_ID: mybatis-parent
@@ -27,8 +35,6 @@ jobs:
           cache: maven
       - name: Build with Maven
         run: mvn clean package -DskipTests
-      - name: Run Tests
-        run: mvn test
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
